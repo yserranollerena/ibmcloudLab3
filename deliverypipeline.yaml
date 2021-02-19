@@ -1,0 +1,137 @@
+apiVersion: tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: eventlistener
+spec:
+  triggers:
+    - binding:
+        name: triggerbinding
+      template:
+        name: triggertemplate
+---
+apiVersion: tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: triggerbinding
+---
+apiVersion: tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: triggertemplate
+spec:
+  resourcetemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: pipelinerun-$(uid)-pvc
+      spec:
+        resources:
+          requests:
+            storage:  5Gi
+        volumeMode: Filesystem
+        accessModes:
+          - ReadWriteOnce
+#PIPELINE RUN
+    - apiVersion: tekton.dev/v1beta1
+      kind: PipelineRun
+      metadata:
+        name: pipelinerun-$(uid)
+      spec:
+        pipelineRef:
+            name: pipeline
+        workspaces:
+          - name: pipeline-pvc
+            persistentVolumeClaim:
+              claimName: pipelinerun-$(uid)-pvc
+---
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: pipeline
+spec:
+  workspaces:
+  - name: pipeline-pvc
+  tasks:
+    - name: deploy-terraform-task
+      taskRef:
+        name: terraform-task
+      workspaces:
+      - name: task-pvc
+        workspace: pipeline-pvc 
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: terraform-task
+spec:
+  workspaces:
+  - name: task-pvc
+    mountPath: /workspace
+  steps:
+    - name: terraform-update
+      image: ibmcom/pipeline-base-image:2.11
+      workingDir: /workspace
+      env:
+        - name: WORKSPACE_ID
+          valueFrom:
+              configMapKeyRef:
+                name: environment-properties
+                key: workspace
+        - name: IBMCLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: secure-properties
+              key: ibmcloud-api-key
+        - name: HOME
+          value: "/root"
+      script: |
+        #!/bin/bash
+        ibmcloud login --apikey $IBMCLOUD_API_KEY -a "https://cloud.ibm.com" --no-region
+        WORKSPACE=$(ibmcloud terraform workspace get -i $WORKSPACE_ID --json)
+        echo $WORKSPACE > workspace.json
+        ibmcloud terraform workspace update --id $WORKSPACE_ID --file workspace.json
+        sleep 10
+    - name: terraform-plan
+      image: ibmcom/pipeline-base-image:2.11
+      workingDir: /workspace
+      env:
+        - name: WORKSPACE_ID
+          valueFrom:
+              configMapKeyRef:
+                name: environment-properties
+                key: workspace
+        - name: IBMCLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: secure-properties
+              key: ibmcloud-api-key
+        - name: HOME
+          value: "/root"
+      script: |
+        #!/bin/bash
+        ibmcloud login --apikey $IBMCLOUD_API_KEY -a "https://cloud.ibm.com" --no-region
+        echo "ibmcloud terraform plan --id $WORKSPACE_ID"
+        ibmcloud terraform plan -id $WORKSPACE_ID --json
+        sleep 10
+    - name: terraform-apply
+      image: ibmcom/pipeline-base-image:2.11
+      workingDir: /workspace
+      env:
+        - name: WORKSPACE_ID
+          valueFrom:
+              configMapKeyRef:
+                name: environment-properties
+                key: workspace
+        - name: IBMCLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: secure-properties
+              key: ibmcloud-api-key
+        - name: HOME
+          value: "/root"
+      script: |
+        #!/bin/bash
+        ibmcloud login --apikey $IBMCLOUD_API_KEY -a "https://cloud.ibm.com" --no-region
+        echo "ibmcloud terraform apply --id $WORKSPACE_ID --force"
+        ibmcloud terraform apply -id $WORKSPACE_ID --json --force
+        sleep 10
